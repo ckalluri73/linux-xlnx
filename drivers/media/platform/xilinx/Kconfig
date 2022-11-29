@@ -10,10 +10,16 @@ config VIDEO_XILINX
 	select MEDIA_CONTROLLER
 	select VIDEO_V4L2_SUBDEV_API
 	select VIDEOBUF2_DMA_CONTIG
-	select XILINX_FRMBUF
+	#select XILINX_FRMBUF
+	select XILINX_FRMBUF_NEW
 	select V4L2_FWNODE
 	help
 	  Driver for Xilinx Video IP Pipelines
+
+config XILINX_FRMBUF_NEW
+       tristate "Xilinx Framebuffer New Engine"
+       help
+        Enable support for Xilinx Framebuffer Engine.
 
 config VIDEO_XILINX_CSI2RXSS
 	depends on VIDEO_XILINX
