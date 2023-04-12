@@ -1,4 +1,4 @@
-/*                                                                                                         
+/*
  * Xilinx Framebuffer support header file
  *
  * Copyright (C) 2017 Xilinx, Inc. All rights reserved.
@@ -22,9 +22,6 @@
 #include <media/v4l2-ctrls.h>
 #include <media/v4l2-dev.h>
 #include <media/v4l2-fh.h>
-
-#include <media/v4l2-ioctl.h>
-#include <media/videobuf2-v4l2.h>
 
 #include <media/v4l2-ioctl.h>
 #include <media/videobuf2-v4l2.h>
@@ -103,7 +100,6 @@
 #define XILINX_FRMBUF_ALIGN_MUL                 8
 
 #define WAIT_FOR_FLUSH_DONE                     25
-
 
 /* Pixels per clock property flag */
 #define XILINX_PPC_PROP                         BIT(0)
@@ -199,6 +195,89 @@ struct xvip_composite_device;
 struct xvip_video_format;
 
 /**
+ * struct xvip_fb_pipeline - Xilinx Video IP pipeline structure
+ * @pipe: media pipeline
+ * @lock: protects the pipeline @stream_count
+ * @use_count: number of FB engines using the pipeline
+ * @stream_count: number of FB engines currently streaming
+ * @num_fb: number of FB engines in the pipeline
+ * @xdev: Composite device the pipe belongs to
+ */
+struct xvip_fb_pipeline {
+        struct media_pipeline pipe;
+
+        struct mutex lock;
+        unsigned int use_count;
+        unsigned int stream_count;
+
+        unsigned int num_fbs;
+        struct xvip_composite_device *xdev;
+};
+
+static inline struct xvip_fb_pipeline *to_xvip_fb_pipeline(struct video_device *vdev)
+{       
+	struct media_pipeline *pipe = video_device_pipeline(vdev);
+        
+	if (!pipe)
+		return NULL;
+
+	return container_of(pipe, struct xvip_fb_pipeline, pipe);
+}
+
+/**                                                                                                        
+ * struct data_chunk - Element of scatter-gather list that makes a frame.
+ * @size: Number of bytes to read from source.
+ *        size_dst := fn(op, size_src), so doesn't mean much for destination.
+ * @icg: Number of bytes to jump after last src/dst address of this
+ *       chunk and before first src/dst address for next chunk.
+ *       Ignored for dst(assumed 0), if dst_inc is true and dst_sgl is false.
+ *       Ignored for src(assumed 0), if src_inc is true and src_sgl is false.
+ * @dst_icg: Number of bytes to jump after last dst address of this
+ *       chunk and before the first dst address for next chunk.
+ *       Ignored if dst_inc is true and dst_sgl is false.
+ * @src_icg: Number of bytes to jump after last src address of this
+ *       chunk and before the first src address for next chunk.
+ *       Ignored if src_inc is true and src_sgl is false.
+ */           
+struct data_chunk { 
+        size_t size;
+        size_t icg;
+        size_t dst_icg;
+        size_t src_icg;
+};           
+
+/**
+ * struct fb_interleaved_template - Template to convey DMAC the transfer pattern
+ *       and attributes.
+ * @src_start: Bus address of source for the first chunk.
+ * @dst_start: Bus address of destination for the first chunk.
+ * @dir: Specifies the type of Source and Destination.
+ * @src_inc: If the source address increments after reading from it. 
+ * @dst_inc: If the destination address increments after writing to it. 
+ * @src_sgl: If the 'icg' of sgl[] applies to Source (scattered read).
+ *              Otherwise, source is read contiguously (icg ignored).
+ *              Ignored if src_inc is false.
+ * @dst_sgl: If the 'icg' of sgl[] applies to Destination (scattered write).
+ *              Otherwise, destination is filled contiguously (icg ignored).
+ *              Ignored if dst_inc is false.
+ * @numf: Number of frames in this template.
+ * @frame_size: Number of chunks in a frame i.e, size of sgl[].
+ * @sgl: Array of {chunk,icg} pairs that make up a frame.
+ */
+struct fb_interleaved_template {     
+        fb_addr_t src_start;
+        fb_addr_t dst_start;
+        enum fb_transfer_direction dir;
+        bool src_inc;
+        bool dst_inc;
+        bool src_sgl;
+        bool dst_sgl;
+        size_t numf;
+        size_t frame_size;
+        struct data_chunk sgl[];
+};
+
+/**
 * struct xilinx_frmbuf_format_desc - lookup table to match fourcc to format
 * @dts_name: Device tree name for this entry.
 * @id: Format ID
@@ -230,7 +309,6 @@ struct xilinx_frmbuf_chan;
  * @hsize: Horizontal Size
  * @stride: Number of bytes between the first
  *          pixels of each horizontal line
- * @fmt_id: Format ID
  */
 struct xilinx_frmbuf_desc_hw {
         fb_addr_t luma_plane_addr;
@@ -238,7 +316,6 @@ struct xilinx_frmbuf_desc_hw {
         u32 vsize;
         u32 hsize;
         u32 stride;
-	u32 fmt_id;
 };
 
 /**
@@ -257,59 +334,6 @@ struct xilinx_frmbuf_tx_descriptor {
         void *callback_param;
 	fb_cookie_t cookie;
 	struct xilinx_frmbuf_chan *chan;
-};
-
-/**
- * struct data_chunk - Element of scatter-gather list that makes a frame.
- * @size: Number of bytes to read from source.
- *        size_dst := fn(op, size_src), so doesn't mean much for destination.
- * @icg: Number of bytes to jump after last src/dst address of this
- *       chunk and before first src/dst address for next chunk.
- *       Ignored for dst(assumed 0), if dst_inc is true and dst_sgl is false.
- *       Ignored for src(assumed 0), if src_inc is true and src_sgl is false.
- * @dst_icg: Number of bytes to jump after last dst address of this
- *       chunk and before the first dst address for next chunk.
- *       Ignored if dst_inc is true and dst_sgl is false.
- * @src_icg: Number of bytes to jump after last src address of this
- *       chunk and before the first src address for next chunk.
- *       Ignored if src_inc is true and src_sgl is false.
- */    
-struct data_chunk { 
-        size_t size;
-        size_t icg;
-        size_t dst_icg;
-        size_t src_icg;
-};     
-
-/**
- * struct fb_interleaved_template - Template to convey DMAC the transfer pattern
- *       and attributes.
- * @src_start: Bus address of source for the first chunk.
- * @dst_start: Bus address of destination for the first chunk.
- * @dir: Specifies the type of Source and Destination.
- * @src_inc: If the source address increments after reading from it.
- * @dst_inc: If the destination address increments after writing to it.
- * @src_sgl: If the 'icg' of sgl[] applies to Source (scattered read).
- *              Otherwise, source is read contiguously (icg ignored).
- *              Ignored if src_inc is false.
- * @dst_sgl: If the 'icg' of sgl[] applies to Destination (scattered write).
- *              Otherwise, destination is filled contiguously (icg ignored).
- *              Ignored if dst_inc is false.
- * @numf: Number of frames in this template.
- * @frame_size: Number of chunks in a frame i.e, size of sgl[].
- * @sgl: Array of {chunk,icg} pairs that make up a frame.
- */
-struct fb_interleaved_template {                                                                     
-        fb_addr_t src_start;
-        fb_addr_t dst_start;
-        enum fb_transfer_direction dir;
-        bool src_inc;
-        bool dst_inc;
-        bool src_sgl;
-        bool dst_sgl;
-        size_t numf;
-        size_t frame_size;
-        struct data_chunk sgl[];
 };
 
 /**
@@ -365,50 +389,91 @@ struct xilinx_frmbuf_chan {
  * @dev: Device Structure
  */
 struct xvip_frmbuf {
-       void __iomem *regs;
-       struct device *dev;
-       struct xvip_composite_device *xdev;
 
-       struct video_device video;
+	void __iomem *regs;
 
-       struct xilinx_frmbuf_chan chan;
+        struct device *dev;
+        struct xvip_composite_device *xdev;
 
-       struct gpio_desc *rst_gpio;
+	struct list_head list;
 
-       struct v4l2_format format;
-       const struct xvip_video_format *fmtinfo;
+	struct xvip_fb_pipeline pipe;
+        struct video_device video;
+	struct media_pad pad;
+	u32 remote_subdev_med_bus;
 
-       const struct xilinx_frmbuf_feature *cfg;
+	unsigned int port;
 
-       u32 enabled_vid_fmts;
-       u32 *v4l2_memory_fmts;
-       u32 v4l2_fmt_cnt;
-       u32 *poss_v4l2_fmts;
-       u32 poss_v4l2_fmt_cnt;
+        struct xilinx_frmbuf_chan chan;
 
-       u32 max_width;
-       u32 max_height;
-       unsigned int align;
-       u32 ppc;
-       struct clk *ap_clk;
+        struct gpio_desc *rst_gpio;
 
-       u32 prev_fid;
-       u32 low_latency_cap;
+	struct mutex lock;
+	struct v4l2_format format;
+	struct v4l2_rect r;
+        const struct xvip_video_format *fmtinfo;
+
+	const struct xilinx_frmbuf_feature *cfg;
+
+	u32 enabled_vid_fmts;
+        u32 *v4l2_memory_fmts;
+        u32 v4l2_fmt_cnt;
+        u32 *poss_v4l2_fmts;
+        u32 poss_v4l2_fmt_cnt;
+
+        struct vb2_queue queue;
+        unsigned int sequence;
+
+        struct list_head queued_bufs;
+        spinlock_t queued_lock;
+
+	struct v4l2_ctrl_handler ctrl_handler;
+
+	u32 max_width;
+        u32 max_height;
+        unsigned int align;
+        u32 ppc;
+        struct clk *ap_clk;
+
+        u32 prev_fid;
+        u32 low_latency_cap;
 
 };
+
+#define to_xvip_frmbuf(vdev)       container_of(vdev, struct xvip_frmbuf, video)
+
+/**
+ * struct xvip_fb_buffer - Video FB buffer                                                                                                                                                  
+ * @buf: vb2 buffer base object             
+ * @queue: buffer list entry in the FB engine queued buffers list
+ * @fb: FB channel that uses the buffer
+ * @desc: Descriptor associated with this structure
+ */
+struct xvip_fb_buffer {
+        struct vb2_v4l2_buffer buf;
+        struct list_head queue;
+        struct xvip_frmbuf *frmbuf;
+        struct xilinx_frmbuf_tx_descriptor *desc;
+};
+
+#define to_xvip_fb_buffer(vb)  container_of(vb, struct xvip_fb_buffer, buf)
 
 #if IS_ENABLED(CONFIG_XILINX_FRMBUF_NEW)
 /*
 TODO: xvip_frmbuf_init
 */
-int xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, struct device_node *node);
+int xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, enum v4l2_buf_type type, struct device_node *node, unsigned int port);
+void xvip_frmbuf_cleanup(struct xvip_frmbuf *frmbuf);
+static void xvip_frmbuf_complete(void *param);
 
 #else
 
-static inline void  xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, struct device_node *node)
+static inline void  xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, enum v4l2_buf_type type, struct device_node *node, unsigned int port)
+{ }
 
+static inline void xvip_frmbuf_cleanup(struct xvip_frmbuf *frmbuf)
 { }
 
 #endif
 
-#endif /*__XILINX_FRMBUF_NEW_H*/ 
+#endif /*__XILINX_FRMBUF_NEW_H*/

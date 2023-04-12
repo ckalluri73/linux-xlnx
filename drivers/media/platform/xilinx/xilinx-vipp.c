@@ -193,9 +193,22 @@ xvip_graph_find_dma(struct xvip_composite_device *xdev, unsigned int port)
 {
 	struct xvip_dma *dma;
 
-	list_for_each_entry(dma, &xdev->dmas, list) {
+	list_for_each_entry(dma, &xdev->chan_list, list) {
 		if (dma->port == port)
 			return dma;
+	}
+
+	return NULL;
+}
+
+static struct xvip_frmbuf *
+xvip_graph_find_frmbuf(struct xvip_composite_device *xdev, unsigned int port)
+{
+	struct xvip_frmbuf *frmbuf;
+
+	list_for_each_entry(frmbuf, &xdev->chan_list, list) {
+		if (frmbuf->port == port)
+			return frmbuf;
 	}
 
 	return NULL;
@@ -295,6 +308,101 @@ static int xvip_graph_build_dma(struct xvip_composite_device *xdev)
 	return ret;
 }
 
+static int xvip_graph_build_frmbuf(struct xvip_composite_device *xdev)
+{
+	const u32 link_flags = MEDIA_LNK_FL_ENABLED;
+	struct fwnode_handle *fwnode = of_fwnode_handle(xdev->dev->of_node);
+	struct media_entity *source;
+	struct media_entity *sink;
+	struct media_pad *source_pad;
+	struct media_pad *sink_pad;
+	struct xvip_graph_entity *ent;
+	struct v4l2_fwnode_link link;
+	struct fwnode_handle *ep = NULL;
+	struct xvip_frmbuf *frmbuf;
+	int ret = 0;
+
+	dev_dbg(xdev->dev, "creating links for FRMBUF engines\n");
+
+	fwnode_graph_for_each_endpoint(fwnode, ep) {
+		dev_dbg(xdev->dev, "processing endpoint %pfw\n", ep);
+
+		ret = v4l2_fwnode_parse_link(ep, &link);
+		if (ret < 0) {
+			dev_err(xdev->dev, "failed to parse link for %pfw\n",
+				ep);
+			continue;
+		}
+
+		/* Find the FRMBUF engine. */
+		frmbuf = xvip_graph_find_frmbuf(xdev, link.local_port);
+		if (frmbuf == NULL) {
+			dev_err(xdev->dev, "no FRMBUF engine found for port %u\n",
+				link.local_port);
+			v4l2_fwnode_put_link(&link);
+			ret = -EINVAL;
+			break;
+		}
+
+		dev_dbg(xdev->dev, "creating link for FRMBUF engine %s\n",
+			frmbuf->video.name);
+
+		/* Find the remote entity. */
+		ent = xvip_graph_find_entity(xdev, link.remote_node);
+		if (ent == NULL) {
+			dev_err(xdev->dev, "no entity found for %pfw\n",
+				link.remote_node);
+			v4l2_fwnode_put_link(&link);
+			ret = -ENODEV;
+			break;
+		}
+
+		if (link.remote_port >= ent->entity->num_pads) {
+			dev_err(xdev->dev, "invalid port number %u on %pfw\n",
+				link.remote_port, link.remote_node);
+			v4l2_fwnode_put_link(&link);
+			ret = -EINVAL;
+			break;
+		}
+
+		if (frmbuf->pad.flags & MEDIA_PAD_FL_SOURCE) {
+			source = &frmbuf->video.entity;
+			source_pad = &frmbuf->pad;
+			sink = ent->entity;
+			sink_pad = &sink->pads[link.remote_port];
+		} else {
+			source = ent->entity;
+			source_pad = &source->pads[link.remote_port];
+			sink = &frmbuf->video.entity;
+			sink_pad = &frmbuf->pad;
+		}
+
+		v4l2_fwnode_put_link(&link);
+
+		/* Create the media link. */
+		dev_dbg(xdev->dev, "creating %s:%u -> %s:%u link\n",
+			source->name, source_pad->index,
+			sink->name, sink_pad->index);
+
+		ret = media_create_pad_link(source, source_pad->index,
+					       sink, sink_pad->index,
+					       link_flags);
+		if (ret < 0) {
+			dev_err(xdev->dev,
+				"failed to create %s:%u -> %s:%u link\n",
+				source->name, source_pad->index,
+				sink->name, sink_pad->index);
+			break;
+		}
+	}
+
+	if (ep)
+		fwnode_handle_put(ep);
+
+	return ret;
+}
+
+
 static int xvip_graph_notify_complete(struct v4l2_async_notifier *notifier)
 {
 	struct xvip_composite_device *xdev =
@@ -314,9 +422,17 @@ static int xvip_graph_notify_complete(struct v4l2_async_notifier *notifier)
 	}
 
 	/* Create links for DMA channels. */
-	ret = xvip_graph_build_dma(xdev);
+	if(!xdev->use_frmbuf_new_drvr) {
+		ret = xvip_graph_build_dma(xdev);
+	}
 	if (ret < 0)
 		return ret;
+
+        else {
+                ret = xvip_graph_build_frmbuf(xdev);
+        }
+        if (ret < 0)
+                return ret;
 
 	ret = v4l2_device_register_subdev_nodes(&xdev->v4l2_dev);
 	if (ret < 0)
@@ -562,6 +678,64 @@ static int xvip_graph_dma_init_one(struct xvip_composite_device *xdev,
 	return 0;
 }
 
+static int xvip_graph_frmbuf_init_one(struct xvip_composite_device *xdev,
+				   struct device_node *node)
+{
+	struct xvip_frmbuf *frmbuf;
+	struct device_node *frmbuf_node;
+	enum v4l2_buf_type type;
+	const char *direction;
+	unsigned int index;
+	int ret;
+
+	ret = of_property_read_string(node, "direction", &direction);
+	if (ret < 0)
+		return ret;
+
+	if (strcmp(direction, "input") == 0)
+		type = xvip_is_mplane ? V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE :
+						V4L2_BUF_TYPE_VIDEO_CAPTURE;
+	else if (strcmp(direction, "output") == 0)
+		type = xvip_is_mplane ? V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE :
+					V4L2_BUF_TYPE_VIDEO_OUTPUT;
+	else
+		return -EINVAL;
+
+	of_property_read_u32(node, "reg", &index);
+
+        frmbuf_node = of_parse_phandle(xdev->dev->of_node, "frmbuf", index);
+        if(!frmbuf_node) {
+                 dev_err(xdev->dev, "failed to parse frmbuf phandle successfully");
+                 of_node_put(frmbuf_node);
+                 return -ENODEV;
+         }
+
+	frmbuf = devm_kzalloc(xdev->dev, sizeof(*frmbuf), GFP_KERNEL);
+	if (frmbuf == NULL)
+		return -ENOMEM;
+
+	ret = xvip_frmbuf_init(xdev, frmbuf, type, frmbuf_node, index);
+	if (ret < 0) {
+		dev_err(xdev->dev, "%pOF Framebuffer initialization failed. No channel found\n", node);
+		return ret;
+	}
+
+	of_node_put(frmbuf_node);
+
+	list_add_tail(&frmbuf->list, &xdev->chan_list);
+
+	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
+		xdev->v4l2_caps |= V4L2_CAP_VIDEO_CAPTURE_MPLANE;
+	else if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE)
+		xdev->v4l2_caps |= V4L2_CAP_VIDEO_CAPTURE;
+	else if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT)
+		xdev->v4l2_caps |= V4L2_CAP_VIDEO_OUTPUT;
+	else if (type == V4L2_BUF_TYPE_VIDEO_OUTPUT_MPLANE)
+		xdev->v4l2_caps |= V4L2_CAP_VIDEO_OUTPUT_MPLANE;
+
+	return 0;
+}
+
 static int xvip_graph_dma_init(struct xvip_composite_device *xdev)
 {
 	struct device_node *ports;
@@ -586,6 +760,30 @@ static int xvip_graph_dma_init(struct xvip_composite_device *xdev)
 	return ret;
 }
 
+static int xvip_graph_frmbuf_init(struct xvip_composite_device *xdev)
+{
+	struct device_node *ports;
+	struct device_node *port;
+	int ret = 0;
+
+	ports = of_get_child_by_name(xdev->dev->of_node, "ports");
+	if (ports == NULL) {
+		dev_err(xdev->dev, "ports node not present\n");
+		return -EINVAL;
+	}
+
+	for_each_child_of_node(ports, port) {
+		ret = xvip_graph_frmbuf_init_one(xdev, port);
+		if (ret) {
+			of_node_put(port);
+			break;
+		}
+	}
+
+	of_node_put(ports);
+	return ret;
+}
+
 static void xvip_graph_cleanup(struct xvip_composite_device *xdev)
 {
 	struct xvip_dma *dmap;
@@ -594,9 +792,23 @@ static void xvip_graph_cleanup(struct xvip_composite_device *xdev)
 	v4l2_async_nf_unregister(&xdev->notifier);
 	v4l2_async_nf_cleanup(&xdev->notifier);
 
-	list_for_each_entry_safe(dma, dmap, &xdev->dmas, list) {
+	list_for_each_entry_safe(dma, dmap, &xdev->chan_list, list) {
 		xvip_dma_cleanup(dma);
 		list_del(&dma->list);
+	}
+}
+
+static void xvip_graph_frmbuf_cleanup(struct xvip_composite_device *xdev)
+{
+	struct xvip_frmbuf *frmbufp;
+	struct xvip_frmbuf *frmbuf;
+
+	v4l2_async_nf_unregister(&xdev->notifier);
+	v4l2_async_nf_cleanup(&xdev->notifier);
+
+	list_for_each_entry_safe(frmbuf, frmbufp, &xdev->chan_list, list) {
+		xvip_frmbuf_cleanup(frmbuf);
+		list_del(&frmbuf->list);
 	}
 }
 
@@ -604,12 +816,24 @@ static int xvip_graph_init(struct xvip_composite_device *xdev)
 {
 	int ret;
 
-	/* Init the DMA channels. */
-	ret = xvip_graph_dma_init(xdev);
-	if (ret < 0) {
-		dev_err(xdev->dev, "DMA initialization failed\n");
-		goto done;
-	}
+	xdev->use_frmbuf_new_drvr = 0;
+
+	/* Init the Framebuffer/DMA channels */
+        if (of_device_is_compatible(xdev->dev->of_node, "xlnx,video-2")) {
+                 xdev->use_frmbuf_new_drvr = 1;
+                 ret = xvip_graph_frmbuf_init(xdev);
+                 if (ret < 0) {
+                         dev_err(xdev->dev, "Framebuffer initialization failed\n");
+                         goto done;
+                 }
+         }
+         else {
+                 ret = xvip_graph_dma_init(xdev);
+                 if (ret < 0) {
+                         dev_err(xdev->dev, "DMA initialization failed\n");
+                         goto done;
+                 }
+         }
 
 	/* Parse the graph to extract a list of subdevice DT nodes. */
 	ret = xvip_graph_parse(xdev);
@@ -636,8 +860,13 @@ static int xvip_graph_init(struct xvip_composite_device *xdev)
 	ret = 0;
 
 done:
-	if (ret < 0)
+	if (ret < 0 &&!xdev->use_frmbuf_new_drvr)
 		xvip_graph_cleanup(xdev);
+	else if (ret < 0 && xdev->use_frmbuf_new_drvr == 1) 
+        {
+                xdev->use_frmbuf_new_drvr = 0;
+                xvip_graph_frmbuf_cleanup(xdev);
+        }
 
 	return ret;
 }
@@ -737,7 +966,7 @@ static int xvip_composite_remove(struct platform_device *pdev)
 }
 
 static const struct of_device_id xvip_composite_of_id_table[] = {
-	{ .compatible = "xlnx,video" },
+	{ .compatible = "xlnx,video-2" },
 	{ }
 };
 MODULE_DEVICE_TABLE(of, xvip_composite_of_id_table);
