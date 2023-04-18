@@ -208,9 +208,12 @@ struct xvip_fb_pipeline {
 
         struct mutex lock;
         unsigned int use_count;
-        unsigned int stream_count;
+        unsigned int input_stream_count;
+        unsigned int output_stream_count;
 
-        unsigned int num_fbs;
+	struct list_head frmbufs;
+        unsigned int num_inputs;
+        unsigned int num_outputs;
         struct xvip_composite_device *xdev;
 };
 
@@ -225,7 +228,7 @@ static inline struct xvip_fb_pipeline *to_xvip_fb_pipeline(struct video_device *
 }
 
 /**                                                                                                        
- * struct data_chunk - Element of scatter-gather list that makes a frame.
+ * struct fb_data_chunk - Element of scatter-gather list that makes a frame.
  * @size: Number of bytes to read from source.
  *        size_dst := fn(op, size_src), so doesn't mean much for destination.
  * @icg: Number of bytes to jump after last src/dst address of this
@@ -239,7 +242,7 @@ static inline struct xvip_fb_pipeline *to_xvip_fb_pipeline(struct video_device *
  *       chunk and before the first src address for next chunk.
  *       Ignored if src_inc is true and src_sgl is false.
  */           
-struct data_chunk { 
+struct fb_data_chunk { 
         size_t size;
         size_t icg;
         size_t dst_icg;
@@ -264,7 +267,7 @@ struct data_chunk {
  * @frame_size: Number of chunks in a frame i.e, size of sgl[].
  * @sgl: Array of {chunk,icg} pairs that make up a frame.
  */
-struct fb_interleaved_template {     
+struct frmbuf_interleaved_template {     
         fb_addr_t src_start;
         fb_addr_t dst_start;
         enum fb_transfer_direction dir;
@@ -274,7 +277,7 @@ struct fb_interleaved_template {
         bool dst_sgl;
         size_t numf;
         size_t frame_size;
-        struct data_chunk sgl[];
+        struct fb_data_chunk sgl[];
 };
 
 /**
@@ -316,6 +319,7 @@ struct xilinx_frmbuf_desc_hw {
         u32 vsize;
         u32 hsize;
         u32 stride;
+	u32 fmt_id;
 };
 
 /**
@@ -396,6 +400,7 @@ struct xvip_frmbuf {
         struct xvip_composite_device *xdev;
 
 	struct list_head list;
+	struct list_head pipe_list;
 
 	struct xvip_fb_pipeline pipe;
         struct video_device video;
@@ -405,11 +410,14 @@ struct xvip_frmbuf {
 	unsigned int port;
 
         struct xilinx_frmbuf_chan chan;
+	struct frmbuf_interleaved_template xt;
+	struct fb_data_chunk sgl[1];
+	unsigned int width_align;
 
         struct gpio_desc *rst_gpio;
 
 	struct mutex lock;
-	struct v4l2_format format;
+	struct v4l2_pix_format_mplane format;
 	struct v4l2_rect r;
         const struct xvip_video_format *fmtinfo;
 
@@ -462,13 +470,13 @@ struct xvip_fb_buffer {
 /*
 TODO: xvip_frmbuf_init
 */
-int xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, enum v4l2_buf_type type, struct device_node *node, unsigned int port);
+int xvip_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, enum v4l2_buf_type type, struct device_node *node, unsigned int port);
 void xvip_frmbuf_cleanup(struct xvip_frmbuf *frmbuf);
 static void xvip_frmbuf_complete(void *param);
 
 #else
 
-static inline void  xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, enum v4l2_buf_type type, struct device_node *node, unsigned int port)
+static inline void  xvip_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, enum v4l2_buf_type type, struct device_node *node, unsigned int port)
 { }
 
 static inline void xvip_frmbuf_cleanup(struct xvip_frmbuf *frmbuf)

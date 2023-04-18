@@ -22,6 +22,8 @@
 #include <media/v4l2-device.h>
 #include <media/v4l2-fwnode.h>
 
+#include <linux/xilinx-frmbuf-new.h>
+
 #include "xilinx-dma.h"
 #include "xilinx-vipp.h"
 
@@ -664,7 +666,7 @@ static int xvip_graph_dma_init_one(struct xvip_composite_device *xdev,
 		return ret;
 	}
 
-	list_add_tail(&dma->list, &xdev->dmas);
+	list_add_tail(&dma->list, &xdev->chan_list);
 
 	if (type == V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE)
 		xdev->v4l2_caps |= V4L2_CAP_VIDEO_CAPTURE_MPLANE;
@@ -920,7 +922,7 @@ static int xvip_composite_probe(struct platform_device *pdev)
 
 	xdev->dev = &pdev->dev;
 	mutex_init(&xdev->lock);
-	INIT_LIST_HEAD(&xdev->dmas);
+	INIT_LIST_HEAD(&xdev->chan_list);
 	v4l2_async_nf_init(&xdev->notifier);
 
 	ret = xvip_composite_v4l2_init(xdev);

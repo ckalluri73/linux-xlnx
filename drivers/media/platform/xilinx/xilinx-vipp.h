@@ -37,8 +37,9 @@ struct xvip_composite_device {
 	struct device *dev;
 
 	struct v4l2_async_notifier notifier;
+	u32 use_frmbuf_new_drvr;
 
-	struct list_head dmas;
+	struct list_head chan_list;
 	u32 v4l2_caps;
 	struct mutex lock; /* lock to protect xvip pipeline instance */
 	bool atomic_streamon;

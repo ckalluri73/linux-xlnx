@@ -48,14 +48,14 @@ static DEFINE_MUTEX(frmbuf_chan_list_lock);
  * Select the mode of operation for pipeline that have multiple output FRMBUF
  * engines.
  *
- * @XVIP_FRMBUF_MULTI_OUT_MODE_SYNC: Wait for all outputs to be started before
+ * @XVIP_FB_MULTI_OUT_MODE_SYNC: Wait for all outputs to be started before
  *      starting the pipeline
- * @XVIP_FRMBUF_MULTI_OUT_MODE_ASYNC: Start pipeline branches independently when
+ * @XVIP_FB_MULTI_OUT_MODE_ASYNC: Start pipeline branches independently when
  *      outputs are started
  */
 enum {
-        XVIP_FRMBUF_MULTI_OUT_MODE_SYNC = 0,
-        XVIP_FRMBUF_MULTI_OUT_MODE_ASYNC = 1,
+        XVIP_FB_MULTI_OUT_MODE_SYNC = 0,
+        XVIP_FB_MULTI_OUT_MODE_ASYNC = 1,
 };
 
 static int xvip_frmbuf_multi_out_mode = 0;
@@ -594,7 +594,7 @@ static int xvip_frmbuf_verify_format(struct xvip_frmbuf *frmbuf)
                 return -EINVAL;
 	}
 
-        if (fmt.format.field != dma->format.field) {
+        if (fmt.format.field != frmbuf->format.field) {
                 dev_dbg(frmbuf->xdev->dev, "%s(): field mismatch %u != %u\n",
                         __func__, fmt.format.field, frmbuf->format.field);
                 return -EINVAL;
@@ -605,7 +605,7 @@ static int xvip_frmbuf_verify_format(struct xvip_frmbuf *frmbuf)
 
 int xilinx_frmbuf_chan_get_width_align(struct xilinx_frmbuf_chan *chan, u32 *width_align)
 {
-        struct xilinx_frmbuf *frmbuf;
+        struct xvip_frmbuf *frmbuf;
 
 	frmbuf = chan->frmbuf;
         if (IS_ERR(frmbuf))
@@ -758,7 +758,7 @@ static void xilinx_frmbuf_start(struct xilinx_frmbuf_chan *chan)
 
 /**
  * xilinx_frmbuf_alloc_tx_descriptor - Allocate transaction descriptor
- * @chan: Driver specific dma channel
+ * @chan: Driver specific frmbuf channel
  *
  * Return: The allocated descriptor on success and NULL on failure.
  */
@@ -817,7 +817,7 @@ static void xilinx_frmbuf_free_descriptors(struct xilinx_frmbuf_chan *chan)
 
 /**
  * xilinx_frmbuf_free_chan_resources - Free channel resources
- * @dchan: DMA channel
+ * @dchan: FMRBUF channel
  */
 static void xilinx_frmbuf_free_chan_resources(struct xilinx_frmbuf_chan *chan)
 {
@@ -932,8 +932,8 @@ static void xilinx_frmbuf_tx_submit(struct xilinx_frmbuf_chan *chan ,struct xili
 
 /**
 * xilinx_frmbuf_prep_interleaved - prepare a descriptor for a
-*      DMA_SLAVE transaction
-* @dchan: DMA channel
+*      FRMBUF_SLAVE transaction
+* @dchan: FRMBUF channel
 * @xt: Interleaved template pointer
 * @flags: transfer ack flags
 *
@@ -941,7 +941,7 @@ static void xilinx_frmbuf_tx_submit(struct xilinx_frmbuf_chan *chan ,struct xili
 */
 static struct xilinx_frmbuf_tx_descriptor *
 xilinx_frmbuf_prep_interleaved(struct xilinx_frmbuf_chan *chan,
-				   struct fb_interleaved_template *xt,
+				   struct frmbuf_interleaved_template *xt,
                                    unsigned long flags)
 {
         struct xilinx_frmbuf_tx_descriptor *desc;
@@ -965,12 +965,12 @@ xilinx_frmbuf_prep_interleaved(struct xilinx_frmbuf_chan *chan,
         if (hsize & 1)
                 hsize++;
 
-        if (vsize > chan->xdev->max_height || hsize > chan->xdev->max_width) {
-                dev_dbg(chan->xdev->dev,
+        if (vsize > chan->frmbuf->max_height || hsize > chan->frmbuf->max_width) {
+                dev_dbg(chan->frmbuf->dev,
                         "vsize %d max vsize %d hsize %d max hsize %d\n",
-                        vsize, chan->xdev->max_height, hsize,
-                        chan->xdev->max_width);
-                dev_err(chan->xdev->dev, "Requested size not supported!\n");
+                        vsize, chan->frmbuf->max_height, hsize,
+                        chan->frmbuf->max_width);
+                dev_err(chan->frmbuf->dev, "Requested size not supported!\n");
                 goto error;
         }
 
@@ -989,7 +989,7 @@ xilinx_frmbuf_prep_interleaved(struct xilinx_frmbuf_chan *chan,
         if (hw->hsize & 1)
                 hw->hsize++;
 
-        if (chan->direction == DMA_MEM_TO_DEV) {
+        if (chan->direction == FB_MEM_TO_DEV) {
                 hw->luma_plane_addr = xt->src_start;
                 if (xt->frame_size == 2 || xt->frame_size == 3)
                         hw->chroma_plane_addr[0] =
@@ -1018,7 +1018,7 @@ xilinx_frmbuf_prep_interleaved(struct xilinx_frmbuf_chan *chan,
         return desc;
 
 error:
-        dev_err(chan->xdev->dev,
+        dev_err(chan->frmbuf->dev,
                 "Invalid frmbuf template or missing frmbuf video fmt config\n");
         return NULL;
 }
@@ -1299,7 +1299,7 @@ static int xilinx_frmbuf_chan_probe(struct xvip_frmbuf *frmbuf,
 
 static void xvip_frmbuf_complete(void *param)
 {
-        struct xvip_frmbuf_buffer *buf = param;
+        struct xvip_fb_buffer *buf = param;
         struct xvip_frmbuf *frmbuf = buf->frmbuf;
         unsigned int i;
         u32 fid;
@@ -1313,7 +1313,7 @@ static void xvip_frmbuf_complete(void *param)
         buf->buf.sequence = frmbuf->sequence++;
         buf->buf.vb2_buf.timestamp = ktime_get_ns();
         
-        status = xilinx_frmbuf_get_fid(frmbuf->chan, buf->desc, &fid);
+        status = xilinx_frmbuf_get_fid(&frmbuf->chan, buf->desc, &fid);
         if (!status) {
                 if (frmbuf->format.field == V4L2_FIELD_ALTERNATE) {
                         /*
@@ -1340,7 +1340,7 @@ static void xvip_frmbuf_complete(void *param)
         vb2_buffer_done(&buf->buf.vb2_buf, VB2_BUF_STATE_DONE);
 }
 
-static int xvip_frmbuf_submit_buffer(struct xvip_frmbuf_buffer *buf,
+static int xvip_frmbuf_submit_buffer(struct xvip_fb_buffer *buf,
                                   enum fb_transfer_direction dir,
                                   fb_addr_t frmbuf_addrs[2],
                                   u32 format, unsigned int num_planes,
@@ -1352,13 +1352,11 @@ static int xvip_frmbuf_submit_buffer(struct xvip_frmbuf_buffer *buf,
         u32 flags = 0;
 
         if (dir == FB_DEV_TO_MEM) {
-                flags = FB_PREP_INTERRUPT | DMA_CTRL_ACK;
                 frmbuf->xt.dir = FB_DEV_TO_MEM;
                 frmbuf->xt.src_sgl = false;
                 frmbuf->xt.dst_sgl = true;
                 frmbuf->xt.dst_start = frmbuf_addrs[0];
         } else  {
-                flags = FB_PREP_INTERRUPT | FB_CTRL_ACK;
                 frmbuf->xt.dir = FB_MEM_TO_DEV;
                 frmbuf->xt.src_sgl = true;
                 frmbuf->xt.dst_sgl = false;
@@ -1370,7 +1368,7 @@ static int xvip_frmbuf_submit_buffer(struct xvip_frmbuf_buffer *buf,
          * to get start address of 2nd plane
          */
 
-        xilinx_frmbuf_v4l2_config(frmbuf->chan, format);
+        xilinx_frmbuf_v4l2_config(&frmbuf->chan, format);
         frmbuf->xt.frame_size = num_planes;
 
         frmbuf->sgl[0].size = width;
@@ -1386,7 +1384,7 @@ static int xvip_frmbuf_submit_buffer(struct xvip_frmbuf_buffer *buf,
 
         frmbuf->xt.numf = height;
 
-        desc = xilinx_frmbuf_prep_interleaved(frmbuf->chan, &frmbuf->xt, flags);
+        desc = xilinx_frmbuf_prep_interleaved(&frmbuf->chan, &frmbuf->xt, flags);
         if (!desc) {
                 dev_err(frmbuf->xdev->dev, "Failed to prepare FRMBUF transfer\n");
                 return -EINVAL;
@@ -1395,19 +1393,19 @@ static int xvip_frmbuf_submit_buffer(struct xvip_frmbuf_buffer *buf,
         desc->callback_param = buf;
         buf->desc = desc;
 
-        xilinx_frmbuf_set_fid(frmbuf->chan, desc, fid);
+        xilinx_frmbuf_set_fid(&frmbuf->chan, desc, fid);
 
         spin_lock_irq(&frmbuf->queued_lock);
         list_add_tail(&buf->queue, &frmbuf->queued_bufs);
         spin_unlock_irq(&frmbuf->queued_lock);
 
-        xilinx_frmbuf_submit(desc);
+        xilinx_frmbuf_tx_submit(&frmbuf->chan,desc);
 
         return 0;
 }
 
 static void xvip_frmbuf_submit_vb2_buffer(struct xvip_frmbuf *frmbuf,
-                                       struct xvip_frmbuf_buffer *buf)
+                                       struct xvip_fb_buffer *buf)
 {
         struct vb2_buffer *vb = &buf->buf.vb2_buf;
         enum fb_transfer_direction dir;
@@ -1421,7 +1419,7 @@ static void xvip_frmbuf_submit_vb2_buffer(struct xvip_frmbuf *frmbuf,
         case V4L2_BUF_TYPE_VIDEO_CAPTURE:
         case V4L2_BUF_TYPE_VIDEO_CAPTURE_MPLANE:
         default:
-                dir = DMA_DEV_TO_MEM;
+                dir = FB_DEV_TO_MEM;
                 break;
 
         case V4L2_BUF_TYPE_VIDEO_OUTPUT:
@@ -1432,9 +1430,9 @@ static void xvip_frmbuf_submit_vb2_buffer(struct xvip_frmbuf *frmbuf,
 
         bpl = frmbuf->format.plane_fmt[0].bytesperline;
 
-        frmbuf_addrs[0] = vb2_frmbuf_contig_plane_frmbuf_addr(vb, 0);
+        frmbuf_addrs[0] = vb2_dma_contig_plane_dma_addr(vb, 0);
         if (frmbuf->fmtinfo->num_buffers == 2)
-                frmbuf_addrs[1] = vb2_frmbuf_contig_plane_frmbuf_addr(vb, 1);
+                frmbuf_addrs[1] = vb2_dma_contig_plane_dma_addr(vb, 1);
         else if (frmbuf->fmtinfo->num_planes == 2)
                 frmbuf_addrs[1] = frmbuf_addrs[0] + bpl * frmbuf->format.height;
 
@@ -1463,9 +1461,6 @@ static void xvip_frmbuf_submit_vb2_buffer(struct xvip_frmbuf *frmbuf,
         }
 }
 
-
-
-
 /* -----------------------------------------------------------------------------
 * Pipeline Stream Management
 */
@@ -1479,15 +1474,15 @@ static void xvip_frmbuf_submit_vb2_buffer(struct xvip_frmbuf *frmbuf,
 * source if no IP core along the pipeline is able to drop packets. This affects
 * pipelines that have multiple output FRMBUF engines.
 *
-* The runtime behaviour is controlled through the xvip_dma_multi_out_mode
+* The runtime behaviour is controlled through the xvip_frmbuf_multi_out_mode
 * parameter:
 *
-* - When set to XVIP_FRMBUF_MULTI_OUT_MODE_SYNC, the pipeline start is delayed
+* - When set to XVIP_FB_MULTI_OUT_MODE_SYNC, the pipeline start is delayed
 *   until all FRMBUF engines have been started. This mode of operation is the
 *   default, and needed when the pipeline contains elements that can't drop
 *   packets.
 *
-* - When set to XVIP_FRMBUF_MULTI_OUT_MODE_ASYNC, individual branches of the
+* - When set to XVIP_FB_MULTI_OUT_MODE_ASYNC, individual branches of the
 *   pipeline are started and stopped as output FRMBUF engines are started and
 *   stopped. This allows capturing multiple streams independently, but only
 *   works if streams that are stopped can be blocked before they reach the FRMBUF
@@ -1500,7 +1495,7 @@ static void xvip_frmbuf_submit_vb2_buffer(struct xvip_frmbuf *frmbuf,
  */
 static int xvip_frmbuf_start(struct xvip_frmbuf *frmbuf)
 {
-        xilinx_frmbuf_issue_pending(frmbuf->chan);
+        xilinx_frmbuf_issue_pending(&frmbuf->chan);
 
         return 0;
 }
@@ -1511,18 +1506,18 @@ static int xvip_frmbuf_start(struct xvip_frmbuf *frmbuf)
  */
 static void xvip_frmbuf_stop(struct xvip_frmbuf *frmbuf)
 {
-        xilinx_frmbuf_terminate_all(frmbuf->chan);
+        xilinx_frmbuf_terminate_all(&frmbuf->chan);
 }
 
 /**
  * xvip_fb_pipeline_enable_branch - Enable streaming on all subdevs in a pipeline
  *      branch
  * @pipe: The pipeline
- * @dma: The FRMBUF engine at the end of the branch
+ * @frmbuf: The FRMBUF engine at the end of the branch
  *
  * Return: 0 for success, otherwise error code
  */
-static int xvip_fb_pipeline_enable_branch(struct xvip_pipeline *pipe,
+static int xvip_fb_pipeline_enable_branch(struct xvip_fb_pipeline *pipe,
                                        struct xvip_frmbuf *frmbuf)
 {
         struct v4l2_subdev *sd;
@@ -1554,7 +1549,7 @@ static int xvip_fb_pipeline_enable_branch(struct xvip_pipeline *pipe,
  *
  * Return: 0 for success, otherwise error code
  */
-static int xvip_fb_pipeline_disable_branch(struct xvip_pipeline *pipe,
+static int xvip_fb_pipeline_disable_branch(struct xvip_fb_pipeline *pipe,
                                         struct xvip_frmbuf *frmbuf)
 {
         struct v4l2_subdev *sd;
@@ -1578,12 +1573,12 @@ static int xvip_fb_pipeline_disable_branch(struct xvip_pipeline *pipe,
         return 0;
 }
 
-#define xvip_pipeline_for_each_fb(pipe, frmbuf, type)                     \
-list_for_each_entry(frmbuf, &pipe->fbs, pipe_list)                        \
+#define xvip_pipeline_for_each_frmbuf(pipe, frmbuf, type)                     \
+list_for_each_entry(frmbuf, &pipe->frmbufs, pipe_list)                        \
         if (frmbuf->video.vfl_dir == type)
 
 #define xvip_pipeline_for_each_frmbuf_continue_reverse(pipe, frmbuf, type)    \
-list_for_each_entry_continue_reverse(frmbuf, &pipe->fbs, pipe_list)       \
+list_for_each_entry_continue_reverse(frmbuf, &pipe->frmbufs, pipe_list)       \
         if (frmbuf->video.vfl_dir == type)
 
 /**
@@ -1595,7 +1590,7 @@ list_for_each_entry_continue_reverse(frmbuf, &pipe->fbs, pipe_list)       \
  *
  * Return: 0 for success, otherwise error code
  */
-static int xvip_fb_pipeline_start(struct xvip_pipeline *pipe)
+static int xvip_fb_pipeline_start(struct xvip_fb_pipeline *pipe)
 {
         struct xvip_frmbuf *frmbuf;
         int ret;
@@ -1648,9 +1643,9 @@ err_output:
  * @pipe: The pipeline
  *
  * This function is used in synchronous pipeline mode to stop the full
- * pipeline when a DMA engine is stopped.
+ * pipeline when a FRMBUF engine is stopped.
  */
-static void xvip_fb_pipeline_stop(struct xvip_pipeline *pipe)
+static void xvip_fb_pipeline_stop(struct xvip_fb_pipeline *pipe)
 {
         struct xvip_frmbuf *frmbuf;
 
@@ -1686,7 +1681,7 @@ static void xvip_fb_pipeline_stop(struct xvip_pipeline *pipe)
  * operation otherwise. The pipeline state is not updated when the operation
  * fails.
  */
-static int xvip_pipeline_start_frmbuf(struct xvip_pipeline *pipe,
+static int xvip_pipeline_start_frmbuf(struct xvip_fb_pipeline *pipe,
                                    struct xvip_frmbuf *frmbuf)
 {
         int ret = 0;
@@ -1694,11 +1689,11 @@ static int xvip_pipeline_start_frmbuf(struct xvip_pipeline *pipe,
         mutex_lock(&pipe->lock);
 
         switch (xvip_frmbuf_multi_out_mode) {
-        case XVIP_DMA_MULTI_OUT_MODE_SYNC:
+        case XVIP_FB_MULTI_OUT_MODE_SYNC:
         default:
                 if (pipe->input_stream_count + pipe->output_stream_count ==
                     pipe->num_inputs + pipe->num_outputs - 1) {
-                        ret = xvip_pipeline_start(pipe);
+                        ret = xvip_fb_pipeline_start(pipe);
                         if (ret < 0)
                                 goto done;
                 }
@@ -1710,7 +1705,7 @@ static int xvip_pipeline_start_frmbuf(struct xvip_pipeline *pipe,
 
                 break;
 
-        case XVIP_DMA_MULTI_OUT_MODE_ASYNC:
+        case XVIP_FB_MULTI_OUT_MODE_ASYNC:
                 ret = xvip_frmbuf_start(frmbuf);
                 if (ret)
                         goto done;
@@ -1745,13 +1740,13 @@ static int xvip_pipeline_start_frmbuf(struct xvip_pipeline *pipe,
  * @frmbuf direction. As soon as the streaming count goes lower than the number of
  * FRMBUF engines in the pipeline, it disables all entities in the pipeline.
  */
-static void xvip_pipeline_stop_frmbuf(struct xvip_pipeline *pipe,
+static void xvip_pipeline_stop_frmbuf(struct xvip_fb_pipeline *pipe,
                                    struct xvip_frmbuf *frmbuf)
 {
         mutex_lock(&pipe->lock);
 
         switch (xvip_frmbuf_multi_out_mode) {
-        case XVIP_DMA_MULTI_OUT_MODE_SYNC:
+        case XVIP_FB_MULTI_OUT_MODE_SYNC:
         default:
                 if (frmbuf->video.vfl_dir == VFL_DIR_RX)
                         pipe->output_stream_count--;
@@ -1764,7 +1759,7 @@ static void xvip_pipeline_stop_frmbuf(struct xvip_pipeline *pipe,
 
                 break;
 
-        case XVIP_DMA_MULTI_OUT_MODE_ASYNC:
+        case XVIP_FB_MULTI_OUT_MODE_ASYNC:
                 xvip_fb_pipeline_disable_branch(pipe, frmbuf);
                 xvip_frmbuf_stop(frmbuf);
                 break;
@@ -1774,7 +1769,7 @@ static void xvip_pipeline_stop_frmbuf(struct xvip_pipeline *pipe,
 }
 
 static int xvip_fb_pipeline_init(struct xvip_fb_pipeline *pipe,
-                                  struct xvip_frmbuf *start)
+                              struct xvip_frmbuf *start)
 {
         struct media_graph graph;
         struct media_entity *entity = &start->video.entity;
@@ -1806,13 +1801,15 @@ static int xvip_fb_pipeline_init(struct xvip_fb_pipeline *pipe,
                         num_outputs++;
                 else
                         num_inputs++;
+
+                list_add_tail(&frmbuf->pipe_list, &pipe->frmbufs);
         }
 
         mutex_unlock(&mdev->graph_mutex);
 
         media_graph_walk_cleanup(&graph);
 
-        /* We need at least one FB to proceed */
+        /* We need at least one DMA to proceed */
         if (num_outputs == 0 && num_inputs == 0)
                 return -EPIPE;
 
@@ -1823,17 +1820,18 @@ static int xvip_fb_pipeline_init(struct xvip_fb_pipeline *pipe,
         return 0;
 }
 
+
 static void __xvip_fb_pipeline_cleanup(struct xvip_fb_pipeline *pipe)
 {
-        while (!list_empty(&pipe->fbs))
-                 list_del(pipe->fbs.next);
+        while (!list_empty(&pipe->frmbufs))
+                 list_del(pipe->frmbufs.next);
 
          pipe->num_inputs = 0;
          pipe->num_outputs = 0;
 }
 
 /**
- * xvip_fb_pipeline_cleanup - Cleanup the pipeline after streaming
+ * xvip_fb_pipeline_cleanup - Cleanup the pipeline after streaming                                       
  * @pipe: the pipeline
  *
  * Decrease the pipeline use count and clean it up if we were the last user.
@@ -1845,14 +1843,14 @@ static void xvip_fb_pipeline_cleanup(struct xvip_fb_pipeline *pipe)
         /* If we're the last user clean up the pipeline. */
         if (--pipe->use_count == 0)
                 __xvip_fb_pipeline_cleanup(pipe);
-
+        
         mutex_unlock(&pipe->lock);
 }
 
 /**
  * xvip_fb_pipeline_prepare - Prepare the pipeline for streaming
  * @pipe: the pipeline
- * @frmbuf: FrameBuffer engine at one end of the pipeline
+ * @frmbuf: FRMBUF engine at one end of the pipeline
  *
  * Validate the pipeline if no user exists yet, otherwise just increase the use
  * count.
@@ -1868,7 +1866,7 @@ static int xvip_fb_pipeline_prepare(struct xvip_fb_pipeline *pipe,
 
         /* If we're the first user validate and initialize the pipeline. */
         if (pipe->use_count == 0) {
-                ret = xvip_fb_pipeline_validate(pipe, frmbuf);
+                ret = xvip_fb_pipeline_init(pipe, frmbuf);
                 if (ret < 0) {
                         __xvip_fb_pipeline_cleanup(pipe);
                         goto done;
@@ -1883,6 +1881,7 @@ done:
         return ret;
 }
 
+
 /* -----------------------------------------------------------------------------
  * videobuf2 queue operations
  */
@@ -1890,7 +1889,7 @@ done:
 static void xvip_frmbuf_return_buffers(struct xvip_frmbuf *frmbuf,
                                     enum vb2_buffer_state state)
 {
-        struct xvip_frmbuf_buffer *buf, *nbuf;
+        struct xvip_fb_buffer *buf, *nbuf;
 
         spin_lock_irq(&frmbuf->queued_lock);
         list_for_each_entry_safe(buf, nbuf, &frmbuf->queued_bufs, queue) {
@@ -1944,13 +1943,13 @@ static int xvip_frmbuf_buffer_prepare(struct vb2_buffer *vb)
 static void xvip_frmbuf_buffer_queue(struct vb2_buffer *vb)
 {
          struct vb2_v4l2_buffer *vbuf = to_vb2_v4l2_buffer(vb);
-         struct xvip_frmbuf_buffer *buf = to_xvip_frmbuf_buffer(vbuf);
+         struct xvip_fb_buffer *buf = to_xvip_fb_buffer(vbuf);
          struct xvip_frmbuf *frmbuf = buf->frmbuf;
 
          xvip_frmbuf_submit_vb2_buffer(frmbuf, buf);
 
          if (vb2_is_streaming(&frmbuf->queue))
-                 xilinx_frmbuf_issue_pending(frmbuf->chan);
+                 xilinx_frmbuf_issue_pending(&frmbuf->chan);
 
 }
 
@@ -1958,7 +1957,7 @@ static int xvip_frmbuf_start_streaming(struct vb2_queue *vq, unsigned int count)
 {
 
          struct xvip_frmbuf *frmbuf = vb2_get_drv_priv(vq);
-         struct xvip_pipeline *pipe;
+         struct xvip_fb_pipeline *pipe;
          int ret;
 
          frmbuf->sequence = 0;
@@ -1968,11 +1967,11 @@ static int xvip_frmbuf_start_streaming(struct vb2_queue *vq, unsigned int count)
           * Start streaming on the pipeline. No link touching an entity in the
           * pipeline can be activated or deactivated once streaming is started.
           *
-          * Use the pipeline object embedded in the first DMA object that starts
+          * Use the pipeline object embedded in the first FMRBUF object that starts
           * streaming.
           */
          mutex_lock(&frmbuf->xdev->lock);
-         pipe = to_xvip_pipeline(&frmbuf->video) ? : &frmbuf->pipe;
+         pipe = to_xvip_fb_pipeline(&frmbuf->video) ? : &frmbuf->pipe;
 
          ret = video_device_pipeline_start(&frmbuf->video, &pipe->pipe);
          mutex_unlock(&frmbuf->xdev->lock);
@@ -1986,11 +1985,11 @@ static int xvip_frmbuf_start_streaming(struct vb2_queue *vq, unsigned int count)
          if (ret < 0)
                  goto err_pipe_stop;
 
-         ret = xvip_pipeline_prepare(pipe, frmbuf);
+         ret = xvip_fb_pipeline_prepare(pipe, frmbuf);
          if (ret < 0)
                  goto err_pipe_stop;
 
-         /* Start the DMA engine on the pipeline. */
+         /* Start the FRMBUF engine on the pipeline. */
          ret = xvip_pipeline_start_frmbuf(pipe, frmbuf);
          if (ret < 0)
                  goto err_pipe_cleanup;
@@ -1998,7 +1997,7 @@ static int xvip_frmbuf_start_streaming(struct vb2_queue *vq, unsigned int count)
          return 0;
 
  err_pipe_cleanup:
-         xvip_pipeline_cleanup(pipe);
+         xvip_fb_pipeline_cleanup(pipe);
  err_pipe_stop:
          video_device_pipeline_stop(&frmbuf->video);
  err_return_buffers:
@@ -2012,13 +2011,13 @@ static int xvip_frmbuf_start_streaming(struct vb2_queue *vq, unsigned int count)
 static void xvip_frmbuf_stop_streaming(struct vb2_queue *vq)
 {
          struct xvip_frmbuf *frmbuf = vb2_get_drv_priv(vq);
-         struct xvip_pipeline *pipe = to_xvip_pipeline(&frmbuf->video);
+         struct xvip_fb_pipeline *pipe = to_xvip_fb_pipeline(&frmbuf->video);
 
-         /* Stop the DMA engine on the pipeline. */
+         /* Stop the FRMBUF engine on the pipeline. */
          xvip_pipeline_stop_frmbuf(pipe, frmbuf);
 
          /* Cleanup the pipeline and mark it as being stopped. */
-         xvip_pipeline_cleanup(pipe);
+         xvip_fb_pipeline_cleanup(pipe);
          video_device_pipeline_stop(&frmbuf->video);
 
          /* Give back all queued buffers to videobuf2. */
@@ -2056,56 +2055,6 @@ xvip_frmbuf_querycap(struct file *file, void *fh, struct v4l2_capability *cap)
 
         return 0;
 }
-/*
-static int xvip_frmbuf_enum_fmt(struct xvip_frmbuf *frmbuf, struct v4l2_fmtdesc *f,
-                              struct v4l2_subdev_format *v4l_fmt)
-{
-        const struct xvip_video_format *fmt;
-        int ret;
-        u32 i, fmt_cnt = 0, *fmts = NULL;
-
-        ret = xilinx_frmbuf_get_v4l2_vid_fmts(&frmbuf->chan, &fmt_cnt, &fmts);
-        if (ret)
-                return ret;
-
-        if (v4l_fmt->format.code != frmbuf->remote_subdev_med_bus ||
-            !frmbuf->remote_subdev_med_bus) {
-                frmbuf->poss_v4l2_fmt_cnt = 0;
-                frmbuf->remote_subdev_med_bus = v4l_fmt->format.code;
-
-                if (!frmbuf->poss_v4l2_fmts) {
-                        frmbuf->poss_v4l2_fmts =
-                                devm_kzalloc(&frmbuf->video.dev,
-                                             sizeof(u32) * fmt_cnt,
-                                             GFP_KERNEL);
-                        if (!frmbuf->poss_v4l2_fmts)
-                                return -ENOMEM;
-                }
-
-                for (i = 0; i < fmt_cnt; i++) {
-                        fmt = xvip_get_format_by_fourcc(fmts[i]);
-                        if (IS_ERR(fmt))
-                                return PTR_ERR(fmt);
-
-                        if (fmt->code != frmbuf->remote_subdev_med_bus)
-                                continue;
-
-                        frmbuf->poss_v4l2_fmts[frmbuf->poss_v4l2_fmt_cnt++] = fmts[i];
-                }
-        }
-
-        if (f->index >= frmbuf->poss_v4l2_fmt_cnt)
-                return -EINVAL;
-
-        fmt = xvip_get_format_by_fourcc(frmbuf->poss_v4l2_fmts[f->index]);
-        if (IS_ERR(fmt))
-                return PTR_ERR(fmt);
-
-        f->pixelformat = fmt->fourcc;
-
-        return 0;
-}
-*/
 
 static int
 xvip_frmbuf_enum_input(struct file *file, void *priv, struct v4l2_input *i)
@@ -2163,7 +2112,7 @@ xvip_frmbuf_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
         u32 fmt_cnt = 0;
         u32 *fmts;
 
-        xilinx_frmbuf_get_v4l2_vid_fmts(frmbuf->chan, &fmt_cnt, &fmts);
+        xilinx_frmbuf_get_v4l2_vid_fmts(&frmbuf->chan, &fmt_cnt, &fmts);
 
         if (f->mbus_code) {
                 /* A single 4CC is supported per media bus code. */
@@ -2171,7 +2120,7 @@ xvip_frmbuf_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
                         return -EINVAL;
 
                 /*
-                 * If the DMA engine returned a list of formats, find the one
+                 * If the FRMBUF engine returned a list of formats, find the one
                  * that matches the media bus code. Otherwise, search all the
                  * formats supported by this driver.
                  */
@@ -2189,7 +2138,7 @@ xvip_frmbuf_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
                 }
         } else {
                 /*
-                 * If the DMA engine returned a list of formats, enumerate them,
+                 * If the FRMBUF engine returned a list of formats, enumerate them,
                  * otherwise enumerate all the formats supported by this driver.
                  */
                 if (fmt_cnt) {
@@ -2208,6 +2157,97 @@ xvip_frmbuf_enum_format(struct file *file, void *fh, struct v4l2_fmtdesc *f)
         f->pixelformat = fmt->fourcc;
 
         return 0;
+
+}
+
+static int
+xvip_frmbuf_get_format_mplane(struct file *file, void *fh,                                               
+                           struct v4l2_format *format)
+{
+        struct v4l2_fh *vfh = file->private_data;
+        struct xvip_frmbuf *frmbuf = to_xvip_frmbuf(vfh->vdev);
+
+        format->fmt.pix_mp = frmbuf->format;
+
+        return 0;
+}
+
+static void
+__xvip_frmbuf_try_format(struct xvip_frmbuf *frmbuf,
+                      struct v4l2_pix_format_mplane *pix_mp,
+                      const struct xvip_video_format **fmtinfo)
+{
+         const struct xvip_video_format *info;
+         unsigned int min_width, max_width;
+         unsigned int min_bpl, max_bpl;
+         unsigned int width;
+         unsigned int i;
+
+
+         if (pix_mp->field != V4L2_FIELD_ALTERNATE)
+                 pix_mp->field = V4L2_FIELD_NONE;
+
+         /*
+          * Retrieve format information and select the default format if the
+          * requested format isn't supported.
+          */
+         info = xvip_get_format_by_fourcc(pix_mp->pixelformat);
+
+         if (IS_ERR(info))
+                 info = xvip_get_format_by_fourcc(XVIP_FB_DEF_FORMAT);
+
+         /*
+          * The width alignment requirements (width_align) are expressed in
+          * pixels, while the stride alignment (align) requirements are
+          * expressed in bytes.
+          */
+         min_width = roundup(XVIP_FB_MIN_WIDTH, frmbuf->width_align);
+         max_width = rounddown(XVIP_FB_MAX_WIDTH, frmbuf->width_align);
+
+         width = rounddown(pix_mp->width, frmbuf->width_align);
+         pix_mp->width = clamp(width, min_width, max_width);
+         pix_mp->height = clamp(pix_mp->height, XVIP_FB_MIN_HEIGHT,
+                                XVIP_FB_MAX_HEIGHT);
+
+         /*
+          * Clamp the requested bytes per line value. If the maximum
+          * bytes per line value is zero, the module doesn't support
+          * user configurable line sizes. Override the requested value
+          * with the minimum in that case.
+          */
+         max_bpl = rounddown(XVIP_FB_MAX_WIDTH, frmbuf->align);
+
+         /* Calculate the bytesperline and sizeimage values for each plane. */
+         for (i = 0; i < info->num_planes; i++) {
+                 struct v4l2_plane_pix_format *plane = &pix_mp->plane_fmt[i];
+                 unsigned int bpl;
+
+                 min_bpl = pix_mp->width * info->bytes_per_pixel[i].numerator
+                         / info->bytes_per_pixel[i].denominator;
+                 min_bpl = roundup(min_bpl, frmbuf->align);
+
+                 bpl = rounddown(plane->bytesperline, frmbuf->align);
+                 plane->bytesperline = clamp(bpl, min_bpl, max_bpl);
+
+                 plane->sizeimage = plane->bytesperline * pix_mp->height
+                                  / (i ? info->vsub : 1);
+         }
+
+         /*
+          * When using single-planar formats with multiple planes, add up all
+          * sizeimage values in the first plane.
+          */
+         if (info->num_buffers == 1) {
+                 for (i = 1; i < info->num_planes; ++i) {
+                         struct v4l2_plane_pix_format *plane =
+                                 &pix_mp->plane_fmt[i];
+
+                         pix_mp->plane_fmt[0].sizeimage += plane->sizeimage;
+                 }
+         }
+
+         if (fmtinfo)
+                 *fmtinfo = info;
 
 }
 
@@ -2313,8 +2353,6 @@ xvip_frmbuf_multi_to_single_planar(const struct v4l2_format *fmt_mp,
         pix->xfer_func = pix_mp->xfer_func;
 }
 
-
-
 static int
 xvip_frmbuf_get_format(struct file *file, void *fh, struct v4l2_format *format)
 {
@@ -2330,85 +2368,6 @@ xvip_frmbuf_get_format(struct file *file, void *fh, struct v4l2_format *format)
          xvip_frmbuf_multi_to_single_planar(&fmt_mp, format);
 
          return 0;
-
-}
-
-static void
-__xvip_frmbuf_try_format(struct xvip_frmbuf *frmbuf,
-                      struct v4l2_pix_format_mplate *pix_mp,
-                      const struct xvip_video_format **fmtinfo)
-{
-         const struct xvip_video_format *info;
-         unsigned int min_width, max_width;
-         unsigned int min_bpl, max_bpl;
-         unsigned int width;
-         unsigned int i;
-
-
-         if (pix_mp->field != V4L2_FIELD_ALTERNATE)
-                 pix_mp->field = V4L2_FIELD_NONE;
-
-         /*
-          * Retrieve format information and select the default format if the
-          * requested format isn't supported.
-          */
-         info = xvip_get_format_by_fourcc(pix_mp->pixelformat);
-
-         if (IS_ERR(info))
-                 info = xvip_get_format_by_fourcc(XVIP_DMA_DEF_FORMAT);
-
-         /*
-          * The width alignment requirements (width_align) are expressed in
-          * pixels, while the stride alignment (align) requirements are
-          * expressed in bytes.
-          */
-         min_width = roundup(XVIP_DMA_MIN_WIDTH, frmbuf->width_align);
-         max_width = rounddown(XVIP_DMA_MAX_WIDTH, frmbuf->width_align);
-
-         width = rounddown(pix_mp->width, frmbuf->width_align);
-         pix_mp->width = clamp(width, min_width, max_width);
-         pix_mp->height = clamp(pix_mp->height, XVIP_DMA_MIN_HEIGHT,
-                                XVIP_DMA_MAX_HEIGHT);
-
-         /*
-          * Clamp the requested bytes per line value. If the maximum
-          * bytes per line value is zero, the module doesn't support
-          * user configurable line sizes. Override the requested value
-          * with the minimum in that case.
-          */
-         max_bpl = rounddown(XVIP_DMA_MAX_WIDTH, frmbuf->align);
-
-         /* Calculate the bytesperline and sizeimage values for each plane. */
-         for (i = 0; i < info->num_planes; i++) {
-                 struct v4l2_plane_pix_format *plane = &pix_mp->plane_fmt[i];
-                 unsigned int bpl;
-
-                 min_bpl = pix_mp->width * info->bytes_per_pixel[i].numerator
-                         / info->bytes_per_pixel[i].denominator;
-                 min_bpl = roundup(min_bpl, frmbuf->align);
-
-                 bpl = rounddown(plane->bytesperline, frmbuf->align);
-                 plane->bytesperline = clamp(bpl, min_bpl, max_bpl);
-
-                 plane->sizeimage = plane->bytesperline * pix_mp->height
-                                  / (i ? info->vsub : 1);
-         }
-
-         /*
-          * When using single-planar formats with multiple planes, add up all
-          * sizeimage values in the first plane.
-          */
-         if (info->num_buffers == 1) {
-                 for (i = 1; i < info->num_planes; ++i) {
-                         struct v4l2_plane_pix_format *plane =
-                                 &pix_mp->plane_fmt[i];
-
-                         pix_mp->plane_fmt[0].sizeimage += plane->sizeimage;
-                 }
-         }
-
-         if (fmtinfo)
-                 *fmtinfo = info;
 
 }
 
@@ -2452,7 +2411,7 @@ static int
 xvip_frmbuf_g_selection(struct file *file, void *fh, struct v4l2_selection *sel)
 {
          struct v4l2_fh *vfh = file->private_data;
-         struct xvip_dma *dma = to_xvip_dma(vfh->vdev);
+         struct xvip_frmbuf *frmbuf = to_xvip_frmbuf(vfh->vdev);
          bool crop_frame = false;
 
          switch (sel->target) {
@@ -2486,11 +2445,11 @@ xvip_frmbuf_g_selection(struct file *file, void *fh, struct v4l2_selection *sel)
          sel->r.top = 0;
 
          if (crop_frame) {
-                 sel->r.width = dma->r.width;
-                 sel->r.height = dma->r.height;
+                 sel->r.width = frmbuf->r.width;
+                 sel->r.height = frmbuf->r.height;
          } else {
-                 sel->r.width = dma->format.width;
-                 sel->r.height = dma->format.height;
+                 sel->r.width = frmbuf->format.width;
+                 sel->r.height = frmbuf->format.height;
          }
 
          return 0;
@@ -2526,9 +2485,9 @@ xvip_frmbuf_s_selection(struct file *file, void *fh, struct v4l2_selection *sel)
              sel->r.top != 0 || sel->r.left != 0)
                  return -EINVAL;
 
-         sel->r.width = rounddown(max(XVIP_DMA_MIN_WIDTH, sel->r.width),
+         sel->r.width = rounddown(max(XVIP_FB_MIN_WIDTH, sel->r.width),
                                   frmbuf->width_align);
-         sel->r.height = max(XVIP_DMA_MIN_HEIGHT, sel->r.height);
+         sel->r.height = max(XVIP_FB_MIN_HEIGHT, sel->r.height);
          frmbuf->r.width = sel->r.width;
          frmbuf->r.height = sel->r.height;
 
@@ -2573,7 +2532,7 @@ static const struct v4l2_ioctl_ops xvip_frmbuf_ioctl_ops = {
 static const struct v4l2_file_operations xvip_frmbuf_fops = {
         .owner          = THIS_MODULE,
         .unlocked_ioctl = video_ioctl2,
-        .open           = xvip_frmbuf_open,
+        .open           = v4l2_fh_open,
         .release        = vb2_fop_release,
         .poll           = vb2_fop_poll,
         .mmap           = vb2_fop_mmap,
@@ -2638,7 +2597,7 @@ int xilinx_frmbuf_parse_dt_node(struct xvip_frmbuf *frmbuf,struct device_node *n
                 err = PTR_ERR(frmbuf->rst_gpio);
                 if (err == -EPROBE_DEFER)
                         dev_info(&pdev->dev,
-                                 "%s %d New frmbuf Probe deferred due to GPIO reset defer\n");
+                                " New frmbuf Probe deferred due to GPIO reset defer\n");
                 else
                         dev_err(&pdev->dev,
                                 "Unable to locate reset property in dt\n");
@@ -2780,10 +2739,10 @@ disable_clk:
  * Return: '0' on success and failure value on error
  */
 
-int xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, enum v4l2_buf_type type, struct device_node *node, unsigned int port)
+int xvip_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *frmbuf, enum v4l2_buf_type type, struct device_node *node, unsigned int port)
 {
         int ret;
-	u32 i, hsub, vsub, width, height;
+	struct v4l2_pix_format_mplane *pix_mp;
 	char name[16];
 
         frmbuf->xdev = xdev;
@@ -2793,7 +2752,7 @@ int xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *f
         mutex_init(&frmbuf->pipe.lock);
 
         INIT_LIST_HEAD(&frmbuf->queued_bufs);
-	INIT_LIST_HEAD(&frmbuf->pipe.fbs);
+	INIT_LIST_HEAD(&frmbuf->pipe.frmbufs);
         spin_lock_init(&frmbuf->queued_lock);
 
         /* ... Initialize the frmbuf channel. */
@@ -2804,7 +2763,7 @@ int xilinx_frmbuf_init(struct xvip_composite_device *xdev, struct xvip_frmbuf *f
                 return ret;
         }
 
-        xilinx_frmbuf_chan_get_width_align(frmbuf->chan, &frmbuf->width_align);
+        xilinx_frmbuf_chan_get_width_align(&frmbuf->chan, &frmbuf->width_align);
         if (!frmbuf->width_align) {
                 dev_dbg(frmbuf->xdev->dev,
                         "Using width align %d\n", XVIP_FB_DEF_WIDTH_ALIGN);
@@ -2914,7 +2873,7 @@ error:
         xvip_frmbuf_cleanup(frmbuf);
         return ret;
 
-} EXPORT_SYMBOL(xilinx_frmbuf_init);
+} EXPORT_SYMBOL(xvip_frmbuf_init);
 
 /* -----------------------------------------------------------------------------
  * Platform Device Driver
