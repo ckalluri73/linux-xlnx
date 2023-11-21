@@ -327,36 +327,27 @@ static int xvip_graph_notify_complete(struct v4l2_async_notifier *notifier)
 
 static int xvip_graph_notify_bound(struct v4l2_async_notifier *notifier,
 				   struct v4l2_subdev *subdev,
-				   struct v4l2_async_subdev *unused)
+				   struct v4l2_async_subdev *asd)
 {
 	struct xvip_composite_device *xdev =
 		container_of(notifier, struct xvip_composite_device, notifier);
-	struct xvip_graph_entity *entity;
-	struct v4l2_async_subdev *asd;
+	struct xvip_graph_entity *entity = to_xvip_entity(asd);
 
-	/* Locate the entity corresponding to the bound subdev and store the
-	 * subdev pointer.
-	 */
-	list_for_each_entry(asd, &xdev->notifier.asd_list, asd_list) {
-		entity = to_xvip_entity(asd);
 
-		if (entity->asd.match.fwnode != subdev->fwnode)
-			continue;
+	/* This shouldn't happen */
+         if (WARN_ON(entity->subdev)) {
+                 dev_err(xdev->dev, "duplicate subdev for node %pfw\n",
+                         entity->asd.match.fwnode);
+                 return -EINVAL;
+         }
 
-		if (entity->subdev) {
-			dev_err(xdev->dev, "duplicate subdev for node %pfw\n",
-				entity->asd.match.fwnode);
-			return -EINVAL;
-		}
+	dev_dbg(xdev->dev, "subdev %s bound\n", subdev->name);
 
-		dev_dbg(xdev->dev, "subdev %s bound\n", subdev->name);
-		entity->entity = &subdev->entity;
-		entity->subdev = subdev;
-		return 0;
-	}
+	entity->entity = &subdev->entity;
+	entity->subdev = subdev;
 
-	dev_err(xdev->dev, "no entity for subdev %s\n", subdev->name);
-	return -EINVAL;
+	return 0;
+
 }
 
 static const struct v4l2_async_notifier_operations xvip_graph_notify_ops = {
